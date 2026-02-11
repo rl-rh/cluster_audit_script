@@ -45,7 +45,7 @@
       echo "Starting Audit..."
       
       # 1. Gather Cluster ID
-      oc get clusterversion version -o jsonpath='{.spec.clusterID}{"\\n"}' > clusterID.txt
+      oc get clusterversion version -o custom-columns=ID:.spec.clusterID --no-headers > clusterID.txt
       
       # 2. Gather Operators
       oc get clusteroperators > operators.txt
