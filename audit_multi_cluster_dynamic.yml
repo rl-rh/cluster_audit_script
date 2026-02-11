@@ -37,61 +37,75 @@
         suffix: "_{{ inventory_hostname }}"
       register: temp_dir
 
-    - name: Run Audit Script
+    - name: Run Full Audit Script
       block:
-        - name: Execute audit and generate files
+        - name: Execute your original shell logic
           ansible.builtin.shell:
             cmd: |
               set -e
               export KUBECONFIG="./kubeconfig"
               
-              # Try to login, if it fails, log it to summary and exit 0 to allow reporting
+              # 1. Login
               if ! oc login {{ api_url }} --token={{ api_token }} --insecure-skip-tls-verify=true > /dev/null 2>&1; then
-                echo "CRITICAL: Login Failed for {{ api_url }}" > summary.log
+                echo "CRITICAL: Login Failed for {{ api_url }}" > cluster_summary.log
                 exit 0
               fi
+
+              # 2. RUN YOUR EXACT SCRIPT LOGIC
+              echo "Gathering data for {{ api_url }}..."
               
-              # Gather data
+              # Using custom-columns to avoid the JSONPath \n error
               oc get clusterversion version -o custom-columns=ID:.spec.clusterID --no-headers > clusterID.txt
               oc get clusteroperators > operators.txt
+              oc get csv >> operators.txt
               
-              # Summary logic
-              echo "--- CLUSTER ID ---" > summary.log
-              cat clusterID.txt >> summary.log
-              echo -e "\n--- DEGRADED OPERATORS ---" >> summary.log
-              # Use grep safely (|| true prevents the script from failing if no degraded operators are found)
-              grep -v "False.*False.*False" operators.txt | grep -v "AVAILABLE" >> summary.log || echo "All Operators Healthy" >> summary.log
+              # Get Nodes
+              oc get nodes | cut -f 1 -d ' ' | grep '[a-z]' >> get_nodes.txt
               
-              # Archive
-              tar -czvf ocp_cluster_reporting.tar *.txt summary.log > /dev/null
-            chdir: "{{ temp_dir.path }}"
-          register: shell_output
+              # Describe Nodes Loop
+              while read node; do 
+                oc describe node "$node" >> node_cpu.txt 
+              done < get_nodes.txt
+              
+              # Generate Hashes
+              md5sum get_nodes.txt >> hash.txt 
+              md5sum node_cpu.txt >> hash.txt 
+              md5sum clusterID.txt >> hash.txt 
+              md5sum operators.txt >> hash.txt
+              
+              # Create a consolidated summary for Stdout (Optional, but helpful)
+              echo "--- CLUSTER ID ---" > cluster_summary.log
+              cat clusterID.txt >> cluster_summary.log
+              echo -e "\n--- NODE COUNT ---" >> cluster_summary.log
+              wc -l < get_nodes.txt >> cluster_summary.log
+              echo -e "\n--- RECENT OPERATOR ISSUES ---" >> cluster_summary.log
+              grep -v "False.*False.*False" operators.txt | grep -v "AVAILABLE" | head -n 20 >> cluster_summary.log || echo "All Operators Healthy" >> cluster_summary.log
 
-        # 1. FIXED: We use the registered output from the shell task 
-        # instead of trying to 'cat' the file again with a new task.
-        - name: "REPORT FOR: {{ api_url }}"
+              # Tar everything as requested
+              tar -czvf ocp_cluster_reporting.tar get_nodes.txt node_cpu.txt hash.txt clusterID.txt operators.txt cluster_summary.log > /dev/null
+            chdir: "{{ temp_dir.path }}"
+
+        # --- VIEW SUMMARY IN AAP STDOUT ---
+        - name: "AUDIT SUMMARY: {{ api_url }}"
           ansible.builtin.debug:
-            msg: "{{ lookup('file', temp_dir.path + '/summary.log').split('\n') }}"
-          when: 
-            - hostvars['localhost']['show_stdout_report'] | bool
-            - temp_dir.path is defined
+            msg: "{{ lookup('file', temp_dir.path + '/cluster_summary.log').split('\n') }}"
+          when: hostvars['localhost']['show_stdout_report'] | bool
           ignore_errors: true
 
-        - name: Email the results
+        # --- EMAIL THE FULL TARBALL ---
+        - name: Email full report archive
           community.general.mail:
             host: smtp.example.com
             port: 25
-            subject: "OpenShift Audit Report: {{ api_url }}"
+            subject: "Full OpenShift Audit: {{ api_url }}"
             from: "ansible-reports@example.com"
             to: "{{ email_recipient }}"
-            body: "Attached is the audit report for {{ api_url }}"
+            body: "Audit complete. The attached tarball contains cluster ID, full operator list, CSVs, and all node descriptions."
             attach:
               - "{{ temp_dir.path }}/ocp_cluster_reporting.tar"
-          when: 
-            - hostvars['localhost']['send_email_report'] | bool
-            - temp_dir.path + '/ocp_cluster_reporting.tar' is exists
+          when: hostvars['localhost']['send_email_report'] | bool
           ignore_errors: true
-      
+
       always:
         - name: Cleanup workspace
           ansible.builtin.file:
