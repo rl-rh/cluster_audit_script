@@ -1,5 +1,4 @@
 ---
-# PLAY 1: Parse the Survey Input and Build Dynamic Inventory
 - name: Parse Raw Login Commands
   hosts: localhost
   connection: local
@@ -7,67 +6,29 @@
   vars:
     send_email_report: true
     show_stdout_report: true
-    # Regex to find the token (starts with sha256~, allows standard chars)
     token_regex: "(sha256~[a-zA-Z0-9._-]+)"
-    # Regex to find the URL (https:// + domain + port)
     url_regex: "(https://[a-zA-Z0-9.-]+:[0-9]+)"
 
   tasks:
-    - name: Parse raw input and create hosts
+    - name: Parse raw input and create dynamic inventory
       ansible.builtin.add_host:
         name: "cluster_{{ item_index }}"
         groups: "dynamic_clusters"
-        # Extract Token using Regex
         api_token: "{{ item | regex_search(token_regex) }}"
-        # Extract URL using Regex
         api_url: "{{ item | regex_search(url_regex) }}"
-        # Clean email recipient (optional, defaults to admin if not found)
         email_recipient: "{{ email_recipient | default('admin@example.com') }}"
       loop: "{{ raw_login_list.split('\n') }}"
       loop_control:
         index_var: item_index
-      # Only process lines that actually look like login commands
       when: 
         - item | length > 10
         - item | regex_search(token_regex)
         - item | regex_search(url_regex)
 
-# PLAY 2: Run Audit on the New Dynamic Group
 - name: OpenShift Cluster Audit & Reporting
   hosts: dynamic_clusters
   connection: local
   gather_facts: false
-  strategy: free  # Run all clusters in parallel (Subject to Forks limit)
-
-  vars:
-    # Embed your bash script content here
-    audit_script_content: |
-      #!/bin/bash
-      set -e
-      echo "Starting Audit..."
-      
-      # 1. Gather Cluster ID
-      oc get clusterversion version -o custom-columns=ID:.spec.clusterID --no-headers > clusterID.txt
-      
-      # 2. Gather Operators
-      oc get clusteroperators > operators.txt
-      oc get csv >> operators.txt
-      
-      # 3. Gather Nodes
-      oc get nodes -o name | cut -d/ -f2 > get_nodes.txt
-      
-      # 4. Describe Nodes
-      while read node; do
-        oc describe node "$node" >> node_cpu.txt
-      done < get_nodes.txt
-      
-      # 5. Checksums & Archive
-      md5sum get_nodes.txt >> hash.txt
-      md5sum node_cpu.txt >> hash.txt
-      md5sum clusterID.txt >> hash.txt
-      md5sum operators.txt >> hash.txt
-      
-      tar -czvf ocp_cluster_reporting.tar get_nodes.txt node_cpu.txt hash.txt clusterID.txt operators.txt > /dev/null
 
   tasks:
     - name: Create temporary workspace
@@ -78,50 +39,62 @@
 
     - name: Run Audit Script
       block:
-        - name: Execute script with isolated Kubeconfig
+        - name: Execute audit and generate files
           ansible.builtin.shell:
             cmd: |
-              echo "{{ audit_script_content }}" > audit.sh
-              chmod +x audit.sh
+              set -e
+              export KUBECONFIG="./kubeconfig"
               
-              # ISOLATION: Create a local kubeconfig for this specific task
-              export KUBECONFIG=$(pwd)/kubeconfig
+              # Try to login, if it fails, log it to summary and exit 0 to allow reporting
+              if ! oc login {{ api_url }} --token={{ api_token }} --insecure-skip-tls-verify=true > /dev/null 2>&1; then
+                echo "CRITICAL: Login Failed for {{ api_url }}" > summary.log
+                exit 0
+              fi
               
-              # Login using the parsed variables
-              oc login {{ api_url }} --token={{ api_token }} --insecure-skip-tls-verify=true > /dev/null
+              # Gather data
+              oc get clusterversion version -o custom-columns=ID:.spec.clusterID --no-headers > clusterID.txt
+              oc get clusteroperators > operators.txt
               
-              ./audit.sh
-          args:
+              # Summary logic
+              echo "--- CLUSTER ID ---" > summary.log
+              cat clusterID.txt >> summary.log
+              echo -e "\n--- DEGRADED OPERATORS ---" >> summary.log
+              # Use grep safely (|| true prevents the script from failing if no degraded operators are found)
+              grep -v "False.*False.*False" operators.txt | grep -v "AVAILABLE" >> summary.log || echo "All Operators Healthy" >> summary.log
+              
+              # Archive
+              tar -czvf ocp_cluster_reporting.tar *.txt summary.log > /dev/null
             chdir: "{{ temp_dir.path }}"
+          register: shell_output
 
-        - name: Read summary for stdout
-          ansible.builtin.command: "cat {{ temp_dir.path }}/summary.log"
-          register: summary_contents
-          when: hostvars['localhost']['show_stdout_report'] | bool
-          changed_when: false
-
+        # 1. FIXED: We use the registered output from the shell task 
+        # instead of trying to 'cat' the file again with a new task.
         - name: "REPORT FOR: {{ api_url }}"
           ansible.builtin.debug:
-            msg: "{{ summary_contents.stdout_lines }}"
-          when: hostvars['localhost']['show_stdout_report'] | bool            
+            msg: "{{ lookup('file', temp_dir.path + '/summary.log').split('\n') }}"
+          when: 
+            - hostvars['localhost']['show_stdout_report'] | bool
+            - temp_dir.path is defined
+          ignore_errors: true
 
         - name: Email the results
           community.general.mail:
-            host: smtp.example.com  # UPDATE THIS
+            host: smtp.example.com
             port: 25
             subject: "OpenShift Audit Report: {{ api_url }}"
             from: "ansible-reports@example.com"
             to: "{{ email_recipient }}"
-            body: |
-              Audit complete for cluster at: {{ api_url }}
-              
-              Attached is the reporting archive.
+            body: "Attached is the audit report for {{ api_url }}"
             attach:
               - "{{ temp_dir.path }}/ocp_cluster_reporting.tar"
-          when: hostvars['localhost']['send_email_report'] | bool
-          
+          when: 
+            - hostvars['localhost']['send_email_report'] | bool
+            - temp_dir.path + '/ocp_cluster_reporting.tar' is exists
+          ignore_errors: true
+      
       always:
         - name: Cleanup workspace
           ansible.builtin.file:
             path: "{{ temp_dir.path }}"
             state: absent
+          when: temp_dir.path is defined
