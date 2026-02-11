@@ -7,18 +7,19 @@
     send_email_report: true
     token_regex: "(sha256~[a-zA-Z0-9._-]+)"
     url_regex: "(https://[a-zA-Z0-9.-]+:[0-9]+)"
+    # Regex to grab the cluster's base domain for naming
+    name_regex: "https://api.([a-zA-Z0-9.-]+):"
 
   tasks:
     - name: Parse raw input and create dynamic inventory
       ansible.builtin.add_host:
-        name: "Cluster-{{ item_index }}-{{ item | regex_search('https://api.([a-zA-Z0-9.-]+)', '\\1') | first | default('unnamed') }}"
+        # Use the cluster FQDN as the name. Default to a timestamp if parsing fails.
+        name: "{{ item | regex_search(name_regex, '\\1') | first | default('cluster-' + ansible_date_time.epoch) }}"
         groups: "dynamic_clusters"
         api_token: "{{ item | regex_search(token_regex) }}"
         api_url: "{{ item | regex_search(url_regex) }}"
         email_recipient: "{{ email_recipient | default('admin@example.com') }}"
       loop: "{{ raw_login_list.split('\n') }}"
-      loop_control:
-        index_var: item_index
       when: 
         - item | length > 10
         - item | regex_search(token_regex)
@@ -51,17 +52,19 @@
                 exit 1
               fi
 
-              # Use 'tee' for all commands to ensure they hit the AAP Log and the file
+              # Original script logic with 'tee' for stdout visibility
               echo "--- CLUSTER ID ---" | tee clusterID.txt
               oc get clusterversion version -o custom-columns=ID:.spec.clusterID --no-headers | tee -a clusterID.txt
               
               echo -e "\n--- CLUSTER OPERATORS ---"
               oc get clusteroperators | tee operators.txt
               
+              echo -e "\n--- CLUSTER SERVICE VERSIONS ---"
+              oc get csv | tee -a operators.txt
+              
               echo -e "\n--- NODES LIST ---"
               oc get nodes | tee get_nodes.txt
               
-              # Node Descriptions
               cut -f 1 -d ' ' get_nodes.txt | grep '[a-z]' > node_list.tmp
               while read node; do 
                 echo -e "\n--- DESCRIBE NODE: $node ---"
@@ -81,10 +84,10 @@
           community.general.mail:
             host: smtp.example.com
             port: 25
-            subject: "OpenShift Audit Report: {{ api_url }}"
+            subject: "OpenShift Audit Report: {{ inventory_hostname }}"
             from: "ansible-reports@example.com"
             to: "{{ email_recipient }}"
-            body: "Audit complete for {{ api_url }}."
+            body: "Audit complete for {{ inventory_hostname }} ({{ api_url }})."
             attach:
               - "{{ temp_dir.path }}/ocp_cluster_reporting.tar"
           when: hostvars['localhost']['send_email_report'] | bool
@@ -114,12 +117,12 @@
     - name: Generate Summary Table
       ansible.builtin.debug:
         msg: |
-          +-------------------------------------------------------------------------------------------------------+
-          | AUDIT SUMMARY REPORT                                                                                  |
-          +-------------------------------------------------------------------------------------------------------+
-          | HOSTNAME                       | STATUS     | API URL                                                  |
-          +-------------------------------------------------------------------------------------------------------+
+          +--------------------------------------------------------------------------------------------------+
+          | AUDIT SUMMARY REPORT                                                                             |
+          +--------------------------------------------------------------------------------------------------+
+          | CLUSTER DOMAIN                 | STATUS     | API URL                                            |
+          +--------------------------------------------------------------------------------------------------+
           {% for host in groups['dynamic_clusters'] %}
-          | {{ host.ljust(30) }} | {{ (hostvars[host]['audit_status'] | default('SKIPPED')).ljust(10) }} | {{ (hostvars[host]['api_url'] | default('N/A')).ljust(50) }} |
+          | {{ host.ljust(30) }} | {{ (hostvars[host]['audit_status'] | default('SKIPPED')).ljust(10) }} | {{ (hostvars[host]['api_url'] | default('N/A')).ljust(45) }} |
           {% endfor %}
-          +-------------------------------------------------------------------------------------------------------+
+          +--------------------------------------------------------------------------------------------------+
