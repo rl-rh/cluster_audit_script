@@ -1,0 +1,113 @@
+---
+# PLAY 1: Parse the Survey Input and Build Dynamic Inventory
+- name: Parse Raw Login Commands
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Regex to find the token (starts with sha256~, allows standard chars)
+    token_regex: "(sha256~[a-zA-Z0-9._-]+)"
+    # Regex to find the URL (https:// + domain + port)
+    url_regex: "(https://[a-zA-Z0-9.-]+:[0-9]+)"
+
+  tasks:
+    - name: Parse raw input and create hosts
+      ansible.builtin.add_host:
+        name: "cluster_{{ item_index }}"
+        groups: "dynamic_clusters"
+        # Extract Token using Regex
+        api_token: "{{ item | regex_search(token_regex) }}"
+        # Extract URL using Regex
+        api_url: "{{ item | regex_search(url_regex) }}"
+        # Clean email recipient (optional, defaults to admin if not found)
+        email_recipient: "{{ email_recipient | default('admin@example.com') }}"
+      loop: "{{ raw_login_list.split('\n') }}"
+      loop_control:
+        index_var: item_index
+      # Only process lines that actually look like login commands
+      when: 
+        - item | length > 10
+        - item | regex_search(token_regex)
+        - item | regex_search(url_regex)
+
+# PLAY 2: Run Audit on the New Dynamic Group
+- name: OpenShift Cluster Audit & Reporting
+  hosts: dynamic_clusters
+  connection: local
+  gather_facts: false
+  strategy: free  # Run all clusters in parallel (Subject to Forks limit)
+
+  vars:
+    # Embed your bash script content here
+    audit_script_content: |
+      #!/bin/bash
+      set -e
+      echo "Starting Audit..."
+      
+      # 1. Gather Cluster ID
+      oc get clusterversion version -o jsonpath='{.spec.clusterID}{"\n"}' > clusterID.txt
+      
+      # 2. Gather Operators
+      oc get clusteroperators > operators.txt
+      oc get csv >> operators.txt
+      
+      # 3. Gather Nodes
+      oc get nodes -o name | cut -d/ -f2 > get_nodes.txt
+      
+      # 4. Describe Nodes
+      while read node; do
+        oc describe node "$node" >> node_cpu.txt
+      done < get_nodes.txt
+      
+      # 5. Checksums & Archive
+      md5sum get_nodes.txt >> hash.txt
+      md5sum node_cpu.txt >> hash.txt
+      md5sum clusterID.txt >> hash.txt
+      md5sum operators.txt >> hash.txt
+      
+      tar -czvf ocp_cluster_reporting.tar get_nodes.txt node_cpu.txt hash.txt clusterID.txt operators.txt > /dev/null
+
+  tasks:
+    - name: Create temporary workspace
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: "_{{ inventory_hostname }}"
+      register: temp_dir
+
+    - name: Run Audit Script
+      block:
+        - name: Execute script with isolated Kubeconfig
+          ansible.builtin.shell:
+            cmd: |
+              echo "{{ audit_script_content }}" > audit.sh
+              chmod +x audit.sh
+              
+              # ISOLATION: Create a local kubeconfig for this specific task
+              export KUBECONFIG=$(pwd)/kubeconfig
+              
+              # Login using the parsed variables
+              oc login {{ api_url }} --token={{ api_token }} --insecure-skip-tls-verify=true > /dev/null
+              
+              ./audit.sh
+          args:
+            chdir: "{{ temp_dir.path }}"
+
+        - name: Email the results
+          community.general.mail:
+            host: smtp.example.com  # UPDATE THIS
+            port: 25
+            subject: "OpenShift Audit Report: {{ api_url }}"
+            from: "ansible-reports@example.com"
+            to: "{{ email_recipient }}"
+            body: |
+              Audit complete for cluster at: {{ api_url }}
+              
+              Attached is the reporting archive.
+            attach:
+              - "{{ temp_dir.path }}/ocp_cluster_reporting.tar"
+      
+      always:
+        - name: Cleanup workspace
+          ansible.builtin.file:
+            path: "{{ temp_dir.path }}"
+            state: absent
