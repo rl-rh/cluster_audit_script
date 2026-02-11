@@ -28,6 +28,7 @@
   hosts: dynamic_clusters
   connection: local
   gather_facts: false
+  strategy: free
 
   tasks:
     - name: Create temporary workspace
