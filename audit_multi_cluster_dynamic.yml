@@ -13,13 +13,14 @@
   tasks:
     - name: Parse raw input and create dynamic inventory
       ansible.builtin.add_host:
-        # Use the cluster FQDN as the name. Default to a timestamp if parsing fails.
-        name: "{{ item | regex_search(name_regex, '\\1') | first | default('cluster-' + ansible_date_time.epoch) }}"
+        name: "cluster_{{ item_index }}"
         groups: "dynamic_clusters"
         api_token: "{{ item | regex_search(token_regex) }}"
         api_url: "{{ item | regex_search(url_regex) }}"
         email_recipient: "{{ email_recipient | default('admin@example.com') }}"
       loop: "{{ raw_login_list.split('\n') }}"
+      loop_control:
+        index_var: item_index
       when: 
         - item | length > 10
         - item | regex_search(token_regex)
