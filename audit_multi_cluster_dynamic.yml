@@ -106,7 +106,6 @@
             state: absent
           when: temp_dir.path is defined
 
-# --- THE NEW SUMMARY TABLE PLAY ---
 - name: Final Audit Summary
   hosts: localhost
   connection: local
@@ -115,10 +114,12 @@
     - name: Generate Summary Table
       ansible.builtin.debug:
         msg: |
-          +---------------------------------------------------------------------+
-          | AUDIT SUMMARY REPORT                                                |
-          +---------------------------------------------------------------------+
+          +-------------------------------------------------------------------------------------------------------+
+          | AUDIT SUMMARY REPORT                                                                                  |
+          +-------------------------------------------------------------------------------------------------------+
+          | HOSTNAME                       | STATUS     | API URL                                                  |
+          +-------------------------------------------------------------------------------------------------------+
           {% for host in groups['dynamic_clusters'] %}
-          | {{ host.ljust(30) }} | {{ hostvars[host]['audit_status'] | default('SKIPPED') | ljust(10) }} | {{ hostvars[host]['api_url'] | default('N/A').ljust(40) }}
+          | {{ host.ljust(30) }} | {{ (hostvars[host]['audit_status'] | default('SKIPPED')).ljust(10) }} | {{ (hostvars[host]['api_url'] | default('N/A')).ljust(50) }} |
           {% endfor %}
-          +---------------------------------------------------------------------+
+          +-------------------------------------------------------------------------------------------------------+
