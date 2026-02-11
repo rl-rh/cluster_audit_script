@@ -5,6 +5,8 @@
   connection: local
   gather_facts: false
   vars:
+    send_email_report: true
+    show_stdout_report: true
     # Regex to find the token (starts with sha256~, allows standard chars)
     token_regex: "(sha256~[a-zA-Z0-9._-]+)"
     # Regex to find the URL (https:// + domain + port)
@@ -92,6 +94,17 @@
           args:
             chdir: "{{ temp_dir.path }}"
 
+        - name: Read summary for stdout
+          ansible.builtin.command: "cat {{ temp_dir.path }}/summary.log"
+          register: summary_contents
+          when: hostvars['localhost']['show_stdout_report'] | bool
+          changed_when: false
+
+        - name: "REPORT FOR: {{ api_url }}"
+          ansible.builtin.debug:
+            msg: "{{ summary_contents.stdout_lines }}"
+          when: hostvars['localhost']['show_stdout_report'] | bool            
+
         - name: Email the results
           community.general.mail:
             host: smtp.example.com  # UPDATE THIS
@@ -105,7 +118,8 @@
               Attached is the reporting archive.
             attach:
               - "{{ temp_dir.path }}/ocp_cluster_reporting.tar"
-      
+          when: hostvars['localhost']['send_email_report'] | bool
+          
       always:
         - name: Cleanup workspace
           ansible.builtin.file:
