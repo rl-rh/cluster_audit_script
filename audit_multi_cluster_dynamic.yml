@@ -2,7 +2,7 @@
 - name: Parse Raw Login Commands
   hosts: localhost
   connection: local
-  gather_facts: false
+  gather_facts: true
   vars:
     send_email_report: true
     token_regex: "(sha256~[a-zA-Z0-9._-]+)"
