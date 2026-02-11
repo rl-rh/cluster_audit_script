@@ -11,7 +11,7 @@
   tasks:
     - name: Parse raw input and create dynamic inventory
       ansible.builtin.add_host:
-        name: "cluster_{{ item_index }}"
+        name: "Cluster-{{ item_index }}-{{ item | regex_search('https://api.([a-zA-Z0-9.-]+)', '\\1') | first | default('unnamed') }}"
         groups: "dynamic_clusters"
         api_token: "{{ item | regex_search(token_regex) }}"
         api_url: "{{ item | regex_search(url_regex) }}"
@@ -39,67 +39,65 @@
 
     - name: Run Full Audit Script
       block:
-        - name: "Execute and Stream Output for {{ api_url }}"
+        - name: "Execute and Stream Output"
           ansible.builtin.shell:
             cmd: |
               set -e
               export KUBECONFIG="./kubeconfig"
               
-              echo "--- ATTEMPTING LOGIN: {{ api_url }} ---"
+              echo "--- LOGGING INTO: {{ api_url }} ---"
               if ! oc login {{ api_url }} --token={{ api_token }} --insecure-skip-tls-verify=true > /dev/null 2>&1; then
-                echo "CRITICAL ERROR: Login Failed for {{ api_url }}"
+                echo "CRITICAL: Login Failed for {{ api_url }}"
                 exit 1
               fi
 
-              # --- CLUSTER ID ---
+              # Use 'tee' for all commands to ensure they hit the AAP Log and the file
               echo "--- CLUSTER ID ---" | tee clusterID.txt
               oc get clusterversion version -o custom-columns=ID:.spec.clusterID --no-headers | tee -a clusterID.txt
               
-              # --- OPERATORS & CSVs ---
               echo -e "\n--- CLUSTER OPERATORS ---"
               oc get clusteroperators | tee operators.txt
-              echo -e "\n--- CLUSTER SERVICE VERSIONS ---"
-              oc get csv | tee -a operators.txt
               
-              # --- NODES ---
               echo -e "\n--- NODES LIST ---"
               oc get nodes | tee get_nodes.txt
               
-              # --- NODE DESCRIPTIONS ---
-              # We use 'cut' as in your original script to loop
+              # Node Descriptions
               cut -f 1 -d ' ' get_nodes.txt | grep '[a-z]' > node_list.tmp
               while read node; do 
                 echo -e "\n--- DESCRIBE NODE: $node ---"
                 oc describe node "$node" | tee -a node_cpu.txt 
               done < node_list.tmp
               
-              # --- HASHES ---
-              echo -e "\n--- FILE HASHES ---" | tee hash.txt
-              md5sum get_nodes.txt node_cpu.txt clusterID.txt operators.txt | tee -a hash.txt
-              
-              # --- ARCHIVE ---
-              tar -czvf ocp_cluster_reporting.tar get_nodes.txt node_cpu.txt hash.txt clusterID.txt operators.txt > /dev/null
+              tar -czvf ocp_cluster_reporting.tar *.txt > /dev/null
               echo -e "\n--- AUDIT FINISHED: {{ api_url }} ---"
             chdir: "{{ temp_dir.path }}"
           register: audit_output
 
-        # This task prints the entire capture of the script to the AAP UI
-        - name: "STDOUT LOGS: {{ api_url }}"
+        - name: "STDOUT VIEW"
           ansible.builtin.debug:
             var: audit_output.stdout_lines
 
-        - name: Email full report archive
+        - name: Email full report
           community.general.mail:
             host: smtp.example.com
             port: 25
-            subject: "Full OpenShift Audit: {{ api_url }}"
+            subject: "OpenShift Audit Report: {{ api_url }}"
             from: "ansible-reports@example.com"
             to: "{{ email_recipient }}"
-            body: "Audit complete for {{ api_url }}. See attached tarball for details."
+            body: "Audit complete for {{ api_url }}."
             attach:
               - "{{ temp_dir.path }}/ocp_cluster_reporting.tar"
           when: hostvars['localhost']['send_email_report'] | bool
           ignore_errors: true
+
+        - name: Record Success
+          ansible.builtin.set_fact:
+            audit_status: "SUCCESS"
+          
+      rescue:
+        - name: Record Failure
+          ansible.builtin.set_fact:
+            audit_status: "FAILED"
 
       always:
         - name: Cleanup workspace
@@ -107,3 +105,20 @@
             path: "{{ temp_dir.path }}"
             state: absent
           when: temp_dir.path is defined
+
+# --- THE NEW SUMMARY TABLE PLAY ---
+- name: Final Audit Summary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Generate Summary Table
+      ansible.builtin.debug:
+        msg: |
+          +---------------------------------------------------------------------+
+          | AUDIT SUMMARY REPORT                                                |
+          +---------------------------------------------------------------------+
+          {% for host in groups['dynamic_clusters'] %}
+          | {{ host.ljust(30) }} | {{ hostvars[host]['audit_status'] | default('SKIPPED') | ljust(10) }} | {{ hostvars[host]['api_url'] | default('N/A').ljust(40) }}
+          {% endfor %}
+          +---------------------------------------------------------------------+
