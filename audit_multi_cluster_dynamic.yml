@@ -104,10 +104,10 @@
 
         - name: Email full report
           community.general.mail:
-            host: smtp.example.com
+            host: "{{ smtp_host }}"
             port: 25
             subject: "OpenShift Audit Report: {{ inventory_hostname }}"
-            from: "ansible-reports@example.com"
+            from: "{{ from_addr }}"
             to: "{{ email_recipient }}"
             body: "Audit complete for {{ inventory_hostname }} ({{ api_url }})."
             attach:
