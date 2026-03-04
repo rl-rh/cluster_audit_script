@@ -25,6 +25,7 @@
         - item | length > 10
         - item | regex_search(token_regex)
         - item | regex_search(url_regex)
+      no_log: true
 
 - name: OpenShift Cluster Audit & Reporting
   hosts: dynamic_clusters
@@ -96,6 +97,7 @@
               echo -e "\n--- AUDIT FINISHED: {{ api_url }} ---"
             chdir: "{{ temp_dir.path }}"
           register: audit_output
+          no_log: true
         
 
         - name: "STDOUT VIEW"
