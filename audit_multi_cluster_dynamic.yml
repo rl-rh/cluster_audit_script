@@ -64,7 +64,7 @@
               oc get csv | tee -a operators.txt
               
               echo -e "\n--- NODES LIST ---"
-              oc get nodes | tee get_nodes.txt
+              oc get nodes -o json > nodes.json | tee get_nodes.txt
               
               cut -f 1 -d ' ' get_nodes.txt | grep '[a-z]' > node_list.tmp
               while read node; do 
