@@ -90,7 +90,7 @@
               fi
 
               echo -e "\n--- NODES LIST ---"
-              oc get nodes | tee get_nodes.txt
+              oc get nodes -o json > nodes.json | tee get_nodes.txt
         
               tar -czvf ocp_cluster_reporting.tar *.txt > /dev/null
               echo -e "\n--- AUDIT FINISHED: {{ api_url }} ---"
