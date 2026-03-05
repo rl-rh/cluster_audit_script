@@ -94,7 +94,7 @@
               export CLUSTER_ID=$(oc get clusterversion -o jsonpath='{.items[].spec.clusterID}')
 
               echo -e "\n--- NODES LIST ---"
-              oc get nodes -o json | tee get_nodes.txt
+              oc get nodes -o json | tee get_nodes_${CLUSTER_ID}.txt
         
               zip -q ocp_cluster_reporting_${CLUSTER_ID}.zip *.txt
               echo "${CLUSTER_ID}" > cluster_id.txt
